@@ -69,6 +69,7 @@ ${PLAYER_MODULE_SCRIPT}
   var running = false;
   var countdown = 0;
   var countdownStartedAt = 0;
+  var startDelaySec = 15;
   var lastTime = performance.now();
   var player = { lane: 0, x: 0, y: 0, jumpUntil: 0, duckUntil: 0, lastLaneAt: 0 };
   var obstacles = [];
@@ -170,21 +171,34 @@ ${PLAYER_MODULE_SCRIPT}
     });
   }
 
+  function normalizeCommand(cmd) {
+    if (!cmd) return '';
+    var c = String(cmd).toLowerCase();
+    if (c === 'up') return 'jump';
+    if (c === 'down') return 'duck';
+    if (c === 'crouch') return 'duck';
+    return c;
+  }
+
   function handleRelayMessage(msg) {
-    if (!msg || msg.room !== cfg.room) return;
-    if (msg.type === 'input') {
+    if (!msg) return;
+    var payload = msg && msg.payload && typeof msg.payload === 'object' ? msg.payload : msg;
+    var room = payload.room || msg.room;
+    if (room !== cfg.room) return;
+    if (payload.type === 'input' || msg.type === 'input') {
       lastInputAt = Date.now();
-      document.getElementById('lastCmd').textContent = msg.cmd + ' x=' + fmt(msg.x) + ' y=' + fmt(msg.y) + ' c=' + fmt(msg.confidence) + ' v=' + fmt(msg.speed) + ' ' + (msg.reason || '');
-      handleCommand(msg.cmd, msg);
+      var cmd = normalizeCommand(payload.cmd || payload.command || payload.action);
+      document.getElementById('lastCmd').textContent = cmd + ' x=' + fmt(payload.x) + ' y=' + fmt(payload.y) + ' c=' + fmt(payload.confidence) + ' v=' + fmt(payload.speed) + ' ' + (payload.reason || '');
+      handleCommand(cmd, payload);
     }
   }
 
   function startCountdown() {
     resetGame();
-    countdown = 5;
+    countdown = startDelaySec;
     countdownStartedAt = performance.now();
-    setPill('gameStatus', 'warn', 'start in 5');
-    log('Старт через 5 секунд');
+    setPill('gameStatus', 'warn', 'start in ' + startDelaySec);
+    log('Старт через ' + startDelaySec + ' секунд');
   }
 
   function resetGame() {
@@ -267,7 +281,7 @@ ${PLAYER_MODULE_SCRIPT}
     var dt = Math.min(0.032, (now - lastTime) / 1000);
     lastTime = now;
     if (countdown > 0) {
-      var left = 5 - Math.floor((now - countdownStartedAt) / 1000);
+      var left = startDelaySec - Math.floor((now - countdownStartedAt) / 1000);
       countdown = Math.max(0, left);
       setPill('gameStatus', 'warn', 'start in ' + countdown);
       if (countdown === 0) startGame();
