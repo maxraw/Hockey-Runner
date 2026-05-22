@@ -115,3 +115,43 @@ ws://192.168.1.50:8787
    - Негативный тест: убрать шайбу — команда должна затухать в `neutral/lost`.
    - Шумовой тест: быстрые мелкие дрожания клюшкой не должны давать постоянные ложные команды.
    - Пороговый тест: резкий явный сдвиг шайбы должен стабильно давать одну правильную команду.
+
+## Native iOS tracker + CoreML (новый этап)
+
+Добавлен каркас нативного трекера:
+
+- `docs/native-ios/PuckDetector.swift` — шаблон `AVCaptureVideoDataOutput` + `VNCoreMLRequest`;
+- `docs/native-ios/PuckDetectorBridge.m` — шаблон `RCT_EXTERN_MODULE` для RN bridge;
+- `src/native/nativePuckDetector.ts` — bridge к native-модулю;
+- `src/native/puckPipeline.ts` — фильтрация bbox и motion-конвейер:
+  - `CoreML detector`
+  - `PuckMotionBuffer`
+  - `PeakDirectionDetector`
+  - `CommandSmoother`
+  - `native WebSocket bridge`
+  - `game`
+
+### Требования к ML-модели
+
+1. Класс: `puck`.
+2. Confidence: порог `>= 0.25..0.35` (в MVP стоит `0.35`).
+3. BBox близок к квадрату.
+4. Размер bbox близок к ожидаемому диаметру шайбы.
+5. BBox внутри откалиброванного поля (нормализованный crop 0..1).
+
+### Что нужно сделать по шагам (чтобы довести до прод-теста)
+
+1. Подготовить YOLO модель для шайбы, экспортировать в CoreML (`.mlmodel`).
+2. Скомпилировать/добавить в bundle `.mlmodelc` с именем `PuckYOLO.mlmodelc`.
+3. Выполнить `npm run prebuild:ios`, открыть `ios/*.xcworkspace`.
+4. Подключить `PuckDetector.swift` в target iOS приложения.
+5. Добавить Objective-C bridge (`RCT_EXTERN_MODULE`) для `PuckDetector`, если Xcode не подхватил автосвязывание.
+6. На главном экране выбрать `Открыть телефон‑трекер (Native iOS + CoreML)`.
+7. Проверить статус `running`.
+8. На втором устройстве открыть экран игры (WebView) и проверить входящие команды.
+9. Прогнать сценарии валидации:
+   - start/pause/resume/early-stop;
+   - noisy input / missed detections / outliers;
+   - команда соответствует направлению движения шайбы.
+
+> Важно: игра остаётся в WebView, а трекер переносится в native iOS поэтапно.

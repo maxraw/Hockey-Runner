@@ -12,16 +12,15 @@ const config: ExpoConfig = {
     supportsTablet: true,
     bundleIdentifier: 'com.maxraw.hockeyrunner.mvp',
     infoPlist: {
-      NSCameraUsageDescription: 'Камера нужна для распознавания шайбы на игровом поле.',
-      NSLocalNetworkUsageDescription: 'Локальная сеть нужна для связи телефона-трекера с устройством игры через relay-сервер на MacBook.',
-      ITSAppUsesNonExemptEncryption: false,
-      UIRequiresFullScreen: true,
-      NSBonjourServices: ['_expo._tcp', '_react-native-metro._tcp'],
+      NSCameraUsageDescription:
+        'Камера нужна для распознавания игрового поля и движения хоккейной шайбы.',
+      NSLocalNetworkUsageDescription:
+        'Локальная сеть нужна для соединения телефона-трекера и устройства с игрой.',
+      NSBonjourServices: ['_hockeyrunner._tcp'],
       NSAppTransportSecurity: {
         NSAllowsArbitraryLoads: true,
-        NSAllowsLocalNetworking: true
-      }
-    }
+      },
+    },
   },
   android: {
     package: 'com.maxraw.hockeyrunner.mvp',

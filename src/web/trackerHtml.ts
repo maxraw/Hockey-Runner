@@ -42,7 +42,7 @@ export function buildTrackerHtml(config: TrackerConfig): string {
       left: 8px;
       right: 8px;
       bottom: 8px;
-      max-height: 30vh;
+      max-height: 44vh;
       border-left: 0;
       border-top: 1px solid #20304b;
       border-radius: 16px;
@@ -51,9 +51,23 @@ export function buildTrackerHtml(config: TrackerConfig): string {
       padding: 10px;
     }
     #panel h1 { display: none; }
-    #panel .small { font-size: 11px; line-height: 14px; }
-    #panel .metric { display: none; }
-    #log { height: 54px; }
+    #panel .small { display: none; }
+    #panel .metric {
+      display: grid;
+      grid-template-columns: 82px 1fr;
+      gap: 5px;
+      margin: 3px 0;
+      font-size: 11px;
+      line-height: 13px;
+      border-bottom: 1px solid rgba(148,163,184,0.14);
+      padding-bottom: 2px;
+    }
+    #panel .metric span {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    #log { height: 46px; font-size: 10px; line-height: 13px; }
     button { width: auto; min-width: 31%; padding: 10px 8px; margin: 3px; font-size: 12px; }
     .pill { font-size: 11px; padding: 4px 6px; }
   }
@@ -71,12 +85,18 @@ export function buildTrackerHtml(config: TrackerConfig): string {
     <button id="cameraBtn">1. Включить камеру</button>
     <button id="clearBtn" class="secondary">Очистить углы поля</button>
     <button id="wsBtn" class="secondary">Переподключить relay</button>
+    <button id="testLeftBtn" class="secondary">Тест LEFT</button>
+    <button id="testRightBtn" class="secondary">Тест RIGHT</button>
+    <button id="testJumpBtn" class="secondary">Тест JUMP</button>
+    <button id="testDuckBtn" class="secondary">Тест DUCK</button>
     <div><span id="cameraStatus" class="pill warn">camera: off</span><span id="wsStatus" class="pill warn">ws: off</span><span id="calibStatus" class="pill warn">calib: 0/4</span></div>
     <div class="metric"><b>Комната</b><span id="room"></span></div>
     <div class="metric"><b>Relay</b><span id="relay"></span></div>
     <div class="metric"><b>Поле</b><span id="field"></span></div>
     <div class="metric"><b>Шайба</b><span id="puck"></span></div>
+    <div class="metric"><b>Захват</b><span id="puckStatus">ожидание</span></div>
     <div class="metric"><b>Команда</b><span id="cmd">neutral</span></div>
+    <div class="metric"><b>Передача</b><span id="sentStatus">—</span></div>
     <div class="metric"><b>X / Y</b><span id="xy">—</span></div>
     <div class="metric"><b>Скорость</b><span id="motionSpeed">—</span></div>
     <div class="metric"><b>Причина</b><span id="motionReason">—</span></div>
@@ -111,14 +131,17 @@ ${PUCK_MOTION_MODULE_SCRIPT}
   var fieldPolygonSmall = [];
   var displayTrail = [];
   var lastMotionResult = null;
+  var lastGesturePoint = null;
   var motion = window.HockeyRunnerPuckMotion.create({
     maxPoints: 24,
-    minConfidence: 0.24,
-    minDisplacement: 0.030,
-    minPeakSpeed: 0.23,
-    cooldownMs: 150,
-    holdMs: 170,
-    alpha: 0.42
+    // Временно мягкие пороги для диагностики: сначала добиваемся передачи реального движения.
+    // После проверки шайбы/клюшки поднимем значения обратно, чтобы убрать ложные срабатывания.
+    minConfidence: 0.20,
+    minDisplacement: 0.025,
+    minPeakSpeed: 0.12,
+    cooldownMs: 140,
+    holdMs: 220,
+    alpha: 0.36
   });
 
   document.getElementById('room').textContent = cfg.room;
@@ -129,6 +152,10 @@ ${PUCK_MOTION_MODULE_SCRIPT}
   document.getElementById('cameraBtn').addEventListener('click', startCamera);
   document.getElementById('clearBtn').addEventListener('click', function () { points = []; homography = null; smooth = null; displayTrail = []; lastMotionResult = null; motion.reset(); updateCalibStatus(); drawOverlay(); });
   document.getElementById('wsBtn').addEventListener('click', connectWs);
+  document.getElementById('testLeftBtn').addEventListener('click', function () { sendTestCommand('left'); });
+  document.getElementById('testRightBtn').addEventListener('click', function () { sendTestCommand('right'); });
+  document.getElementById('testJumpBtn').addEventListener('click', function () { sendTestCommand('jump'); });
+  document.getElementById('testDuckBtn').addEventListener('click', function () { sendTestCommand('duck'); });
   overlay.addEventListener('pointerdown', onTap);
   window.addEventListener('resize', resizeCanvas);
 
@@ -264,10 +291,12 @@ ${PUCK_MOTION_MODULE_SCRIPT}
     if (!best) {
       if (Date.now() - lastGoodAt > 450) {
         lastMotionResult = motion.update({ x: null, y: null, confidence: 0, ts: Date.now() });
+        document.getElementById('puckStatus').textContent = 'потеряна';
         document.getElementById('cmd').textContent = 'lost';
         document.getElementById('motionSpeed').textContent = '0.00';
         document.getElementById('motionReason').textContent = 'lost';
         document.getElementById('conf').textContent = '0';
+        displayTrail = [];
         sendInput({ x: null, y: null, cmd: 'lost', confidence: 0, speed: 0, dx: 0, dy: 0, reason: 'lost' });
       }
       return;
@@ -282,18 +311,69 @@ ${PUCK_MOTION_MODULE_SCRIPT}
     smooth.x = smooth.x * 0.70 + norm.x * 0.30;
     smooth.y = smooth.y * 0.70 + norm.y * 0.30;
     var confidence = Math.max(0, Math.min(1, best.score));
-    lastMotionResult = motion.update({ x: smooth.x, y: smooth.y, confidence: confidence, ts: Date.now() });
+    var nowMs = Date.now();
+    lastMotionResult = motion.update({ x: smooth.x, y: smooth.y, confidence: confidence, ts: nowMs });
     var cmd = lastMotionResult.cmd;
-    displayTrail.push({ x: dispPoint.x, y: dispPoint.y, ts: Date.now() });
-    while (displayTrail.length > 24) displayTrail.shift();
-    while (displayTrail.length && Date.now() - displayTrail[0].ts > 520) displayTrail.shift();
-    document.getElementById('cmd').textContent = cmd + (lastMotionResult.rawCommand !== cmd ? ' / raw ' + lastMotionResult.rawCommand : '');
+    var rawCmd = lastMotionResult.rawCommand || 'neutral';
+    var fallback = deriveFallbackCommand(smooth.x, smooth.y, confidence, nowMs);
+
+    // Диагностический режим передачи:
+    // 1) сначала берем стабильную команду motion engine;
+    // 2) если она neutral — берем rawCommand;
+    // 3) если и rawCommand neutral — берем прямой fallback по фактическому смещению шайбы.
+    var transmitCmd = cmd;
+    var transmitReason = lastMotionResult.reason;
+    var transmitDx = lastMotionResult.dx;
+    var transmitDy = lastMotionResult.dy;
+    var transmitSpeed = lastMotionResult.speed;
+
+    if ((transmitCmd === 'neutral' || transmitCmd === 'lost') && rawCmd !== 'neutral' && rawCmd !== 'lost') {
+      transmitCmd = rawCmd;
+      transmitReason = 'raw-' + lastMotionResult.reason;
+    }
+
+    if ((transmitCmd === 'neutral' || transmitCmd === 'lost') && fallback.cmd !== 'neutral') {
+      transmitCmd = fallback.cmd;
+      transmitReason = fallback.reason;
+      transmitDx = fallback.dx;
+      transmitDy = fallback.dy;
+      transmitSpeed = fallback.speed;
+    }
+
+    if (confidence >= 0.16) {
+      document.getElementById('puckStatus').textContent = 'захвачена';
+      displayTrail.push({ x: dispPoint.x, y: dispPoint.y, ts: nowMs });
+    } else {
+      document.getElementById('puckStatus').textContent = 'слабый захват';
+    }
+
+    while (displayTrail.length > 18) displayTrail.shift();
+    while (displayTrail.length && nowMs - displayTrail[0].ts > 430) displayTrail.shift();
+
+    document.getElementById('cmd').textContent =
+      transmitCmd + (rawCmd !== transmitCmd ? ' / raw ' + rawCmd : '') + (fallback.cmd !== 'neutral' ? ' / fb ' + fallback.cmd : '');
     document.getElementById('xy').textContent = smooth.x.toFixed(3) + ' / ' + smooth.y.toFixed(3);
-    document.getElementById('motionSpeed').textContent = lastMotionResult.speed.toFixed(2);
-    document.getElementById('motionReason').textContent = lastMotionResult.reason;
+    document.getElementById('motionSpeed').textContent = transmitSpeed.toFixed(2);
+    document.getElementById('motionReason').textContent = transmitReason;
     document.getElementById('conf').textContent = confidence.toFixed(2);
-    sendInput({ x: smooth.x, y: smooth.y, cmd: cmd, confidence: confidence, speed: lastMotionResult.speed, dx: lastMotionResult.dx, dy: lastMotionResult.dy, reason: lastMotionResult.reason });
-    drawOverlay(best, dispPoint, cmd, lastMotionResult);
+
+    if (transmitCmd !== 'neutral' && transmitCmd !== 'lost') {
+      sendInput({
+        x: smooth.x,
+        y: smooth.y,
+        cmd: transmitCmd,
+        // Временно поднимаем confidence у диагностической команды выше порога gameHtml.
+        confidence: Math.max(confidence, 0.35),
+        speed: transmitSpeed,
+        dx: transmitDx,
+        dy: transmitDy,
+        reason: transmitReason
+      });
+    } else {
+      document.getElementById('sentStatus').textContent = 'нет команды';
+    }
+
+    drawOverlay(best, dispPoint, transmitCmd, lastMotionResult);
   }
 
   function getVideoDisplayRect() {
@@ -317,11 +397,78 @@ ${PUCK_MOTION_MODULE_SCRIPT}
     return { x: x, y: y, width: width, height: height };
   }
 
+  function deriveFallbackCommand(x, y, confidence, nowMs) {
+    var neutral = { cmd: 'neutral', dx: 0, dy: 0, speed: 0, reason: 'fallback-neutral' };
+    if (confidence < 0.16) {
+      lastGesturePoint = { x: x, y: y, ts: nowMs };
+      return neutral;
+    }
+
+    if (!lastGesturePoint) {
+      lastGesturePoint = { x: x, y: y, ts: nowMs };
+      return neutral;
+    }
+
+    var dt = Math.max(1, nowMs - lastGesturePoint.ts);
+    var dx = x - lastGesturePoint.x;
+    var dy = y - lastGesturePoint.y;
+    var speed = Math.sqrt(dx * dx + dy * dy) / dt * 1000;
+
+    // Обновляем опорную точку каждый кадр, чтобы команда была именно от движения, а не от положения.
+    lastGesturePoint = { x: x, y: y, ts: nowMs };
+
+    var absX = Math.abs(dx);
+    var absY = Math.abs(dy);
+
+    // Порог специально мягкий для диагностики. После подтверждения связи поднимем до 0.018–0.030.
+    if (speed < 0.055 || Math.max(absX, absY) < 0.0045) return neutral;
+
+    if (absX >= absY * 1.12) {
+      return { cmd: dx < 0 ? 'left' : 'right', dx: dx, dy: dy, speed: speed, reason: 'fallback-x' };
+    }
+
+    if (absY >= absX * 1.12) {
+      return { cmd: dy < 0 ? 'jump' : 'duck', dx: dx, dy: dy, speed: speed, reason: 'fallback-y' };
+    }
+
+    return neutral;
+  }
+
+  function sendTestCommand(cmd) {
+    var payload = {
+      x: 0.5,
+      y: 0.5,
+      cmd: cmd,
+      confidence: 1,
+      speed: 1,
+      dx: cmd === 'left' ? -0.2 : (cmd === 'right' ? 0.2 : 0),
+      dy: cmd === 'jump' ? -0.2 : (cmd === 'duck' ? 0.2 : 0),
+      reason: 'manual-test',
+      force: true
+    };
+    document.getElementById('puckStatus').textContent = 'тест';
+    document.getElementById('cmd').textContent = cmd + ' / manual-test';
+    document.getElementById('motionSpeed').textContent = '1.00';
+    document.getElementById('motionReason').textContent = 'manual-test';
+    document.getElementById('conf').textContent = '1.00';
+    sendInput(payload);
+    log('Тестовая команда отправлена: ' + cmd);
+  }
+
   function sendInput(payload) {
     var now = Date.now();
-    if (now - lastSendAt < 33) return;
+    if (!payload.force && (!payload.cmd || payload.cmd === 'neutral' || payload.cmd === 'lost')) return;
+    if (!payload.force && now - lastSendAt < 70) return;
     lastSendAt = now;
-    if (!nativeWsConnected) return;
+    if (!nativeWsConnected) {
+      document.getElementById('sentStatus').textContent = 'relay off';
+      log('Команда не отправлена: relay не подключен');
+      return;
+    }
+    if (payload.cmd && payload.cmd !== 'neutral' && payload.cmd !== 'lost') {
+      document.getElementById('sentStatus').textContent = payload.cmd + ' / ' + (payload.reason || '') + ' / c=' + (payload.confidence || 0).toFixed(2);
+      log('Команда отправлена: ' + payload.cmd + ' v=' + (payload.speed || 0).toFixed(2) + ' c=' + (payload.confidence || 0).toFixed(2) + ' ' + (payload.reason || ''));
+    }
     postNative({
       channel: 'hr-ws',
       action: 'send',

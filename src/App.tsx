@@ -1,4 +1,4 @@
-import React, { useCallback, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   SafeAreaView,
   StatusBar,
@@ -16,12 +16,66 @@ import { useKeepAwake } from 'expo-keep-awake';
 import { WebView } from 'react-native-webview';
 import { buildTrackerHtml } from './web/trackerHtml';
 import { buildGameHtml } from './web/gameHtml';
+import { addNativePuckListener, isPuckDetectorAvailable, startNativePuckDetector, stopNativePuckDetector } from './native/nativePuckDetector';
+import { CommandSmoother, FieldCalibration, filterPuckDetection, PeakDirectionDetector, PuckMotionBuffer } from './native/puckPipeline';
 
-type Mode = 'home' | 'tracker' | 'game';
+type Mode = 'home' | 'tracker' | 'tracker-native' | 'game';
 
-const DEFAULT_RELAY = 'ws://192.168.1.10:8787';
+const DEFAULT_RELAY = 'ws://172.20.10.10:8787';
 const DEFAULT_ROOM = 'hockey-test';
 
+
+
+function NativeTrackerScreen({ onBack, onCommand }: { onBack: () => void; onCommand: (cmd: any) => void }) {
+  const [status, setStatus] = useState('idle');
+
+  useEffect(() => {
+    if (!isPuckDetectorAvailable()) {
+      setStatus('native module unavailable');
+      return;
+    }
+
+    const calibration: FieldCalibration = { expectedPuckDiameterNorm: 0.08 };
+    const buffer = new PuckMotionBuffer();
+    const detector = new PeakDirectionDetector();
+    const smoother = new CommandSmoother();
+
+    const sub = addNativePuckListener((ev) => {
+      const sample = filterPuckDetection({
+        className: ev.className,
+        confidence: ev.confidence,
+        bbox: { x: ev.x, y: ev.y, width: ev.width, height: ev.height },
+        ts: ev.ts
+      }, calibration, { minConfidence: 0.35 });
+      if (!sample) return;
+      buffer.push(sample);
+      const base = detector.detect(buffer.all());
+      const motion = smoother.apply(base, sample);
+      onCommand(motion);
+    });
+
+    startNativePuckDetector({ confidenceThreshold: 0.35, modelName: 'PuckYOLO' })
+      .then(() => setStatus('running'))
+      .catch((e: Error) => setStatus('error: ' + e.message));
+
+    return () => {
+      sub.remove();
+      stopNativePuckDetector();
+    };
+  }, [onCommand]);
+
+  return (
+    <SafeAreaView style={styles.shell}>
+      <ExpoStatusBar style="light" />
+      <Header title="Телефон-трекер (Native iOS)" onBack={onBack} />
+      <View style={styles.nativePanel}>
+        <Text style={styles.sectionTitle}>Статус native detector</Text>
+        <Text style={styles.hint}>{status}</Text>
+        <Text style={styles.hint}>Pipeline: CoreML detector → MotionBuffer → PeakDirectionDetector → CommandSmoother → relay/game</Text>
+      </View>
+    </SafeAreaView>
+  );
+}
 export default function App() {
   useKeepAwake();
 
@@ -95,6 +149,12 @@ export default function App() {
     }
   }, [closeNativeWs, numericConfig.relayUrl, numericConfig.room, postToWebView]);
 
+  useEffect(() => {
+    if (mode !== 'tracker-native') return;
+    connectNativeWs('tracker');
+    return () => closeNativeWs();
+  }, [mode, connectNativeWs, closeNativeWs]);
+
   const handleBridgeMessage = useCallback((role: 'tracker' | 'game', data: string) => {
     try {
       const msg = JSON.parse(data);
@@ -140,6 +200,15 @@ export default function App() {
         />
       </SafeAreaView>
     );
+  }
+
+  if (mode === 'tracker-native') {
+    return <NativeTrackerScreen onBack={() => setMode('home')} onCommand={(motion) => {
+      const socket = wsRef.current;
+      if (socket?.readyState === WebSocket.OPEN) {
+        socket.send(JSON.stringify({ type: 'input', role: 'tracker', room: numericConfig.room, ...motion }));
+      }
+    }} />;
   }
 
   if (mode === 'game') {
@@ -222,11 +291,19 @@ export default function App() {
           <View style={styles.card}>
             <Text style={styles.sectionTitle}>3. Запуск режима</Text>
             <TouchableOpacity style={styles.primaryButton} onPress={() => setMode('tracker')}>
-              <Text style={styles.primaryButtonText}>Открыть телефон‑трекер</Text>
+              <Text style={styles.primaryButtonText}>Открыть телефон‑трекер (WebView)</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={styles.secondaryButton} onPress={() => setMode('tracker-native')}>
+              <Text style={styles.secondaryButtonText}>Открыть телефон‑трекер (Native iOS + CoreML)</Text>
             </TouchableOpacity>
             <TouchableOpacity style={styles.secondaryButton} onPress={() => setMode('game')}>
               <Text style={styles.secondaryButtonText}>Открыть экран игры</Text>
             </TouchableOpacity>
+            <View style={styles.disabledNotice}>
+              <Text style={styles.disabledNoticeText}>
+                Native iOS-трекер подключим после обучения и добавления CoreML-модели.
+              </Text>
+            </View>
             <Text style={styles.hint}>Для первого теста можно открыть игру на Mac через симулятор/Xcode или на iPad. Затем вывести экран игры на ТВ кабелем HDMI или AirPlay.</Text>
           </View>
         </ScrollView>
@@ -254,7 +331,16 @@ function clampNumber(value: string, min: number, max: number, fallback: number) 
 }
 
 const styles = StyleSheet.create({
-  flex: { flex: 1 },
+  flex: {
+    flex: 1,
+  },
+  container: {
+    flex: 1,
+    backgroundColor: '#020617',
+  },
+  safeArea: {
+    flex: 1,
+  },
   shell: {
     flex: 1,
     backgroundColor: '#08111f'
@@ -340,6 +426,20 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: '900'
   },
+  disabledNotice: {
+    marginTop: 4,
+    borderColor: '#334155',
+    borderWidth: 1,
+    borderRadius: 12,
+    padding: 10,
+    backgroundColor: '#0f172a',
+  },
+  disabledNoticeText: {
+    color: '#cbd5e1',
+    fontSize: 12,
+    lineHeight: 17,
+    fontWeight: '700',
+  },
   header: {
     height: 54,
     paddingHorizontal: 12,
@@ -372,5 +472,14 @@ const styles = StyleSheet.create({
   webview: {
     flex: 1,
     backgroundColor: '#020617'
+  },
+  nativePanel: {
+    margin: 16,
+    padding: 16,
+    borderRadius: 12,
+    backgroundColor: '#101d31',
+    borderColor: '#24344e',
+    borderWidth: 1,
+    gap: 8
   }
 });

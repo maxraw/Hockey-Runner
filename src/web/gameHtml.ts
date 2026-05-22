@@ -42,6 +42,10 @@ export function buildGameHtml(config: GameConfig): string {
     <button id="startBtn">Начать игру</button>
     <button id="resetBtn" class="secondary">Сбросить</button>
     <button id="wsBtn" class="secondary">Переподключить relay</button>
+    <button id="testLeftBtn" class="secondary">Тест LEFT</button>
+    <button id="testRightBtn" class="secondary">Тест RIGHT</button>
+    <button id="testJumpBtn" class="secondary">Тест JUMP</button>
+    <button id="testDuckBtn" class="secondary">Тест DUCK</button>
     <div><span id="wsStatus" class="pill warn">ws: off</span><span id="gameStatus" class="pill warn">ready</span></div>
     <div class="metric"><b>Комната</b><span id="room"></span></div>
     <div class="metric"><b>Relay</b><span id="relay"></span></div>
@@ -88,6 +92,10 @@ ${PLAYER_MODULE_SCRIPT}
   document.getElementById('startBtn').addEventListener('click', startCountdown);
   document.getElementById('resetBtn').addEventListener('click', resetGame);
   document.getElementById('wsBtn').addEventListener('click', connectWs);
+  document.getElementById('testLeftBtn').addEventListener('click', function () { sendLocalTest('left'); });
+  document.getElementById('testRightBtn').addEventListener('click', function () { sendLocalTest('right'); });
+  document.getElementById('testJumpBtn').addEventListener('click', function () { sendLocalTest('jump'); });
+  document.getElementById('testDuckBtn').addEventListener('click', function () { sendLocalTest('duck'); });
   window.addEventListener('resize', resize);
   window.addEventListener('keydown', function (e) {
     if (e.key === 'ArrowLeft') handleCommand('left');

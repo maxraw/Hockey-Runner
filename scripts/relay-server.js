@@ -31,6 +31,10 @@ wss.on('connection', (ws, req) => {
       console.log(`[hello] role=${ws.meta.role} room=${ws.meta.room} ip=${ws.meta.ip}`);
     }
 
+    if (msg.type === 'input') {
+      console.log(`[input] room=${msg.room || ws.meta.room} cmd=${msg.cmd} confidence=${msg.confidence} speed=${msg.speed} reason=${msg.reason || ''}`);
+    }
+
     const payload = JSON.stringify({ ...msg, relayTs: Date.now() });
     for (const client of clients) {
       if (client === ws || client.readyState !== 1) continue;
