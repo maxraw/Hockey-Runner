@@ -42,6 +42,10 @@ export function buildGameHtml(config: GameConfig): string {
     <button id="startBtn">Начать игру</button>
     <button id="resetBtn" class="secondary">Сбросить</button>
     <button id="wsBtn" class="secondary">Переподключить relay</button>
+    <button id="testLeftBtn" class="secondary">Тест LEFT</button>
+    <button id="testRightBtn" class="secondary">Тест RIGHT</button>
+    <button id="testJumpBtn" class="secondary">Тест JUMP</button>
+    <button id="testDuckBtn" class="secondary">Тест DUCK</button>
     <div><span id="wsStatus" class="pill warn">ws: off</span><span id="gameStatus" class="pill warn">ready</span></div>
     <div class="metric"><b>Комната</b><span id="room"></span></div>
     <div class="metric"><b>Relay</b><span id="relay"></span></div>
@@ -69,6 +73,7 @@ ${PLAYER_MODULE_SCRIPT}
   var running = false;
   var countdown = 0;
   var countdownStartedAt = 0;
+  var startDelaySec = 10;
   var lastTime = performance.now();
   var player = { lane: 0, x: 0, y: 0, jumpUntil: 0, duckUntil: 0, lastLaneAt: 0 };
   var obstacles = [];
@@ -87,6 +92,10 @@ ${PLAYER_MODULE_SCRIPT}
   document.getElementById('startBtn').addEventListener('click', startCountdown);
   document.getElementById('resetBtn').addEventListener('click', resetGame);
   document.getElementById('wsBtn').addEventListener('click', connectWs);
+  document.getElementById('testLeftBtn').addEventListener('click', function () { sendLocalTest('left'); });
+  document.getElementById('testRightBtn').addEventListener('click', function () { sendLocalTest('right'); });
+  document.getElementById('testJumpBtn').addEventListener('click', function () { sendLocalTest('jump'); });
+  document.getElementById('testDuckBtn').addEventListener('click', function () { sendLocalTest('duck'); });
   window.addEventListener('resize', resize);
   window.addEventListener('keydown', function (e) {
     if (e.key === 'ArrowLeft') handleCommand('left');
@@ -170,21 +179,42 @@ ${PLAYER_MODULE_SCRIPT}
     });
   }
 
+  function sendLocalTest(cmd) {
+    var payload = { cmd: cmd, confidence: 1, speed: 1, x: 0.5, y: 0.5, reason: 'local-test' };
+    document.getElementById('lastCmd').textContent = cmd + ' / local-test';
+    handleCommand(cmd, payload);
+    log('Локальная тестовая команда: ' + cmd);
+  }
+
+  function normalizeCommand(cmd) {
+    if (!cmd) return '';
+    var c = String(cmd).toLowerCase();
+    if (c === 'up') return 'jump';
+    if (c === 'down') return 'duck';
+    if (c === 'crouch') return 'duck';
+    return c;
+  }
+
   function handleRelayMessage(msg) {
-    if (!msg || msg.room !== cfg.room) return;
-    if (msg.type === 'input') {
+    if (!msg) return;
+    var payload = msg && msg.payload && typeof msg.payload === 'object' ? msg.payload : msg;
+    var room = payload.room || msg.room;
+    if (room !== cfg.room) return;
+    if (payload.type === 'input' || msg.type === 'input') {
       lastInputAt = Date.now();
-      document.getElementById('lastCmd').textContent = msg.cmd + ' x=' + fmt(msg.x) + ' y=' + fmt(msg.y) + ' c=' + fmt(msg.confidence) + ' v=' + fmt(msg.speed) + ' ' + (msg.reason || '');
-      handleCommand(msg.cmd, msg);
+      var cmd = normalizeCommand(payload.cmd || payload.command || payload.action);
+      document.getElementById('lastCmd').textContent = cmd + ' x=' + fmt(payload.x) + ' y=' + fmt(payload.y) + ' c=' + fmt(payload.confidence) + ' v=' + fmt(payload.speed) + ' ' + (payload.reason || '');
+      log('Получена команда от relay: ' + cmd + ' / ' + (payload.reason || ''));
+      handleCommand(cmd, payload);
     }
   }
 
   function startCountdown() {
     resetGame();
-    countdown = 5;
+    countdown = startDelaySec;
     countdownStartedAt = performance.now();
-    setPill('gameStatus', 'warn', 'start in 5');
-    log('Старт через 5 секунд');
+    setPill('gameStatus', 'warn', 'start in ' + startDelaySec);
+    log('Старт через ' + startDelaySec + ' секунд');
   }
 
   function resetGame() {
@@ -267,7 +297,7 @@ ${PLAYER_MODULE_SCRIPT}
     var dt = Math.min(0.032, (now - lastTime) / 1000);
     lastTime = now;
     if (countdown > 0) {
-      var left = 5 - Math.floor((now - countdownStartedAt) / 1000);
+      var left = startDelaySec - Math.floor((now - countdownStartedAt) / 1000);
       countdown = Math.max(0, left);
       setPill('gameStatus', 'warn', 'start in ' + countdown);
       if (countdown === 0) startGame();
