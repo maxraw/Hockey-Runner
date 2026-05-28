@@ -136,3 +136,28 @@ export class CommandSmoother {
     return { cmd, confidence: point.confidence, x: point.x, y: point.y, speed: base.speed, dx: base.dx, dy: base.dy, reason, ts: now };
   }
 }
+
+
+export type TrackingProfile = 'debug' | 'game';
+
+export type TrackingProfileConfig = {
+  filter: DetectorFilterConfig;
+  motion: { minDisplacement: number; minPeakSpeed: number };
+  smoothing: { cooldownMs: number; holdMs: number };
+  sendRateMs: number;
+};
+
+export const TRACKING_PROFILE_CONFIG: Record<TrackingProfile, TrackingProfileConfig> = {
+  debug: {
+    filter: { minConfidence: 0.25, squareTolerance: 0.65, sizeTolerance: 0.90 },
+    motion: { minDisplacement: 0.02, minPeakSpeed: 0.18 },
+    smoothing: { cooldownMs: 110, holdMs: 220 },
+    sendRateMs: 40
+  },
+  game: {
+    filter: { minConfidence: 0.35, squareTolerance: 0.40, sizeTolerance: 0.55 },
+    motion: { minDisplacement: 0.04, minPeakSpeed: 0.28 },
+    smoothing: { cooldownMs: 180, holdMs: 140 },
+    sendRateMs: 90
+  }
+};
