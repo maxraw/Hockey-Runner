@@ -1,4 +1,4 @@
-import React, { useCallback, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   SafeAreaView,
   StatusBar,
@@ -16,12 +16,96 @@ import { useKeepAwake } from 'expo-keep-awake';
 import { WebView } from 'react-native-webview';
 import { buildTrackerHtml } from './web/trackerHtml';
 import { buildGameHtml } from './web/gameHtml';
+import { addNativePuckListener, isPuckDetectorAvailable, startNativePuckDetector, stopNativePuckDetector } from './native/nativePuckDetector';
+import { CommandSmoother, FieldCalibration, filterPuckDetection, PeakDirectionDetector, PuckMotionBuffer, TRACKING_PROFILE_CONFIG, TrackingProfile } from './native/puckPipeline';
 
-type Mode = 'home' | 'tracker' | 'game';
+type Mode = 'home' | 'tracker' | 'tracker-native' | 'game';
 
 const DEFAULT_RELAY = 'ws://192.168.1.10:8787';
 const DEFAULT_ROOM = 'hockey-test';
 
+
+
+function NativeTrackerScreen({ onBack, onCommand, profile }: { onBack: () => void; onCommand: (cmd: any) => void; profile: TrackingProfile }) {
+  const [status, setStatus] = useState('idle');
+  const [metrics, setMetrics] = useState({ raw: 0, accepted: 0, dropped: 0, lastReason: '—' });
+
+  useEffect(() => {
+    if (!isPuckDetectorAvailable()) {
+      setStatus('native module unavailable');
+      return;
+    }
+
+    const calibration: FieldCalibration = { expectedPuckDiameterNorm: 0.08 };
+    const profileCfg = TRACKING_PROFILE_CONFIG[profile];
+    const buffer = new PuckMotionBuffer();
+    const detector = new PeakDirectionDetector(profileCfg.motion.minDisplacement, profileCfg.motion.minPeakSpeed);
+    const smoother = new CommandSmoother(profileCfg.smoothing.cooldownMs, profileCfg.smoothing.holdMs);
+    let lastSentAt = 0;
+
+    const sub = addNativePuckListener((ev) => {
+      setMetrics((m) => ({ ...m, raw: m.raw + 1 }));
+      const sample = filterPuckDetection({
+        className: ev.className,
+        confidence: ev.confidence,
+        bbox: { x: ev.x, y: ev.y, width: ev.width, height: ev.height },
+        ts: ev.ts
+      }, calibration, profileCfg.filter);
+      if (!sample) {
+        setMetrics((m) => ({ ...m, dropped: m.dropped + 1, lastReason: 'detector-filter' }));
+        return;
+      }
+      buffer.push(sample);
+      const base = detector.detect(buffer.all());
+      const motion = smoother.apply(base, sample);
+      const now = sample.ts;
+      if (now - lastSentAt < profileCfg.sendRateMs) {
+        setMetrics((m) => ({ ...m, dropped: m.dropped + 1, lastReason: 'rate-limit' }));
+        return;
+      }
+      if (profile === 'game' && (motion.cmd === 'neutral' || motion.cmd === 'lost')) {
+        setMetrics((m) => ({ ...m, dropped: m.dropped + 1, lastReason: motion.reason || 'neutral' }));
+        return;
+      }
+      lastSentAt = now;
+      setMetrics((m) => ({ ...m, accepted: m.accepted + 1, lastReason: motion.reason || 'ok' }));
+      onCommand({ ...motion, profile });
+    });
+
+    startNativePuckDetector({ confidenceThreshold: profileCfg.filter.minConfidence, modelName: 'PuckYOLO' })
+      .then(() => setStatus('running'))
+      .catch((e: Error) => setStatus('error: ' + e.message));
+
+    return () => {
+      sub.remove();
+      stopNativePuckDetector();
+    };
+  }, [onCommand, profile]);
+
+  return (
+    <SafeAreaView style={styles.shell}>
+      <ExpoStatusBar style="light" />
+      <Header title="Телефон-трекер (Native iOS)" onBack={onBack} />
+      <View style={styles.nativePanel}>
+        <Text style={styles.sectionTitle}>Статус native detector</Text>
+        <Text style={styles.hint}>{status}</Text>
+        <Text style={styles.hint}>Pipeline: CoreML detector → MotionBuffer → PeakDirectionDetector → CommandSmoother → relay/game</Text>
+        <Text style={styles.hint}>Profile: {profile}</Text>
+        {profile === 'debug' ? (
+          <View style={styles.debugPanel}>
+            <Text style={styles.hint}>raw={metrics.raw} accepted={metrics.accepted} dropped={metrics.dropped} reason={metrics.lastReason}</Text>
+            <View style={styles.debugButtons}>
+              <TouchableOpacity style={styles.secondaryButton} onPress={() => onCommand({ cmd: 'left', confidence: 1, x: 0.3, y: 0.5, speed: 0, dx: -0.2, dy: 0, reason: 'debug-manual', ts: Date.now(), profile })}><Text style={styles.secondaryButtonText}>LEFT</Text></TouchableOpacity>
+              <TouchableOpacity style={styles.secondaryButton} onPress={() => onCommand({ cmd: 'right', confidence: 1, x: 0.7, y: 0.5, speed: 0, dx: 0.2, dy: 0, reason: 'debug-manual', ts: Date.now(), profile })}><Text style={styles.secondaryButtonText}>RIGHT</Text></TouchableOpacity>
+              <TouchableOpacity style={styles.secondaryButton} onPress={() => onCommand({ cmd: 'jump', confidence: 1, x: 0.5, y: 0.3, speed: 0, dx: 0, dy: -0.2, reason: 'debug-manual', ts: Date.now(), profile })}><Text style={styles.secondaryButtonText}>JUMP</Text></TouchableOpacity>
+              <TouchableOpacity style={styles.secondaryButton} onPress={() => onCommand({ cmd: 'duck', confidence: 1, x: 0.5, y: 0.7, speed: 0, dx: 0, dy: 0.2, reason: 'debug-manual', ts: Date.now(), profile })}><Text style={styles.secondaryButtonText}>DUCK</Text></TouchableOpacity>
+            </View>
+          </View>
+        ) : null}
+      </View>
+    </SafeAreaView>
+  );
+}
 export default function App() {
   useKeepAwake();
 
@@ -31,6 +115,7 @@ export default function App() {
   const [fieldLengthCm, setFieldLengthCm] = useState('180');
   const [fieldWidthCm, setFieldWidthCm] = useState('80');
   const [puckDiameterCm, setPuckDiameterCm] = useState('7.5');
+  const [trackingProfile, setTrackingProfile] = useState<TrackingProfile>('game');
 
   const numericConfig = useMemo(() => ({
     relayUrl: relayUrl.trim(),
@@ -95,6 +180,12 @@ export default function App() {
     }
   }, [closeNativeWs, numericConfig.relayUrl, numericConfig.room, postToWebView]);
 
+  useEffect(() => {
+    if (mode !== 'tracker-native') return;
+    connectNativeWs('tracker');
+    return () => closeNativeWs();
+  }, [mode, connectNativeWs, closeNativeWs]);
+
   const handleBridgeMessage = useCallback((role: 'tracker' | 'game', data: string) => {
     try {
       const msg = JSON.parse(data);
@@ -140,6 +231,15 @@ export default function App() {
         />
       </SafeAreaView>
     );
+  }
+
+  if (mode === 'tracker-native') {
+    return <NativeTrackerScreen profile={trackingProfile} onBack={() => setMode('home')} onCommand={(motion) => {
+      const socket = wsRef.current;
+      if (socket?.readyState === WebSocket.OPEN) {
+        socket.send(JSON.stringify({ type: 'input', role: 'tracker', room: numericConfig.room, profile: trackingProfile, ...motion }));
+      }
+    }} />;
   }
 
   if (mode === 'game') {
@@ -220,9 +320,25 @@ export default function App() {
           </View>
 
           <View style={styles.card}>
-            <Text style={styles.sectionTitle}>3. Запуск режима</Text>
+            <Text style={styles.sectionTitle}>3. Профиль трекинга</Text>
+            <View style={styles.debugButtons}>
+              <TouchableOpacity style={trackingProfile === 'game' ? styles.primaryButton : styles.secondaryButton} onPress={() => setTrackingProfile('game')}>
+                <Text style={trackingProfile === 'game' ? styles.primaryButtonText : styles.secondaryButtonText}>game (default)</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={trackingProfile === 'debug' ? styles.primaryButton : styles.secondaryButton} onPress={() => setTrackingProfile('debug')}>
+                <Text style={trackingProfile === 'debug' ? styles.primaryButtonText : styles.secondaryButtonText}>debug</Text>
+              </TouchableOpacity>
+            </View>
+            <Text style={styles.hint}>В production используйте profile=game.</Text>
+          </View>
+
+          <View style={styles.card}>
+            <Text style={styles.sectionTitle}>4. Запуск режима</Text>
             <TouchableOpacity style={styles.primaryButton} onPress={() => setMode('tracker')}>
-              <Text style={styles.primaryButtonText}>Открыть телефон‑трекер</Text>
+              <Text style={styles.primaryButtonText}>Открыть телефон‑трекер (WebView)</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={styles.secondaryButton} onPress={() => setMode('tracker-native')}>
+              <Text style={styles.secondaryButtonText}>Открыть телефон‑трекер (Native iOS + CoreML)</Text>
             </TouchableOpacity>
             <TouchableOpacity style={styles.secondaryButton} onPress={() => setMode('game')}>
               <Text style={styles.secondaryButtonText}>Открыть экран игры</Text>
@@ -372,5 +488,23 @@ const styles = StyleSheet.create({
   webview: {
     flex: 1,
     backgroundColor: '#020617'
+  },
+  debugPanel: {
+    marginTop: 8,
+    gap: 8
+  },
+  debugButtons: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8
+  },
+  nativePanel: {
+    margin: 16,
+    padding: 16,
+    borderRadius: 12,
+    backgroundColor: '#101d31',
+    borderColor: '#24344e',
+    borderWidth: 1,
+    gap: 8
   }
 });
