@@ -21,7 +21,7 @@ import { CommandSmoother, FieldCalibration, filterPuckDetection, PeakDirectionDe
 
 type Mode = 'home' | 'tracker' | 'tracker-native' | 'game';
 
-const DEFAULT_RELAY = 'ws://192.168.1.10:8787';
+const DEFAULT_RELAY = 'ws://172.20.10.10:8787';
 const DEFAULT_ROOM = 'hockey-test';
 
 
@@ -343,6 +343,11 @@ export default function App() {
             <TouchableOpacity style={styles.secondaryButton} onPress={() => setMode('game')}>
               <Text style={styles.secondaryButtonText}>Открыть экран игры</Text>
             </TouchableOpacity>
+            <View style={styles.disabledNotice}>
+              <Text style={styles.disabledNoticeText}>
+                Native iOS-трекер подключим после обучения и добавления CoreML-модели.
+              </Text>
+            </View>
             <Text style={styles.hint}>Для первого теста можно открыть игру на Mac через симулятор/Xcode или на iPad. Затем вывести экран игры на ТВ кабелем HDMI или AirPlay.</Text>
           </View>
         </ScrollView>
@@ -370,7 +375,16 @@ function clampNumber(value: string, min: number, max: number, fallback: number) 
 }
 
 const styles = StyleSheet.create({
-  flex: { flex: 1 },
+  flex: {
+    flex: 1,
+  },
+  container: {
+    flex: 1,
+    backgroundColor: '#020617',
+  },
+  safeArea: {
+    flex: 1,
+  },
   shell: {
     flex: 1,
     backgroundColor: '#08111f'
@@ -455,6 +469,20 @@ const styles = StyleSheet.create({
     color: '#e0f2fe',
     fontSize: 16,
     fontWeight: '900'
+  },
+  disabledNotice: {
+    marginTop: 4,
+    borderColor: '#334155',
+    borderWidth: 1,
+    borderRadius: 12,
+    padding: 10,
+    backgroundColor: '#0f172a',
+  },
+  disabledNoticeText: {
+    color: '#cbd5e1',
+    fontSize: 12,
+    lineHeight: 17,
+    fontWeight: '700',
   },
   header: {
     height: 54,
